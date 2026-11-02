@@ -188,11 +188,11 @@ class MiMotionRunner:
         if app_token is None:
             return "登陆失败！", False
 
-        step = "2005" if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" else str(random.randint(min_step, max_step))
+        step = "2015" if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" else str(random.randint(min_step, max_step))
         self.log_str += f"已设置为随机步数范围({min_step}~{max_step}) 随机值:{step}\n"
         
         user_token_info = user_tokens.get(self.user, {})
-        bound_device_id = user_token_info.get("bound_device_id")
+        bound_device_id = config.get("DEVICE_ID") or user_token_info.get("bound_device_id")
         if not bound_device_id and self.user_id:
             bound_device_id = zeppHelper.get_user_device_id(app_token, self.user_id)
             if bound_device_id:
