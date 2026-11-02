@@ -29,6 +29,12 @@ def get_int_value_default(_config: dict, _key, default):
 
 # 获取当前时间对应的最大和最小步数
 def get_min_max_by_time(hour=None, minute=None):
+    test_step = os.environ.get("MIMOTION_TEST_STEPS", "").strip()
+    if test_step:
+        if not test_step.isdigit() or not 1 <= int(test_step) <= 98800:
+            raise ValueError("一次性测试步数必须是 1 到 98800 的整数")
+        print(f"使用一次性测试步数：{test_step}")
+        return int(test_step), int(test_step)
     if hour is None:
         hour = time_bj.hour
     if minute is None:
@@ -188,7 +194,7 @@ class MiMotionRunner:
         if app_token is None:
             return "登陆失败！", False
 
-        step = "2050"
+        step = str(random.randint(min_step, max_step))
         self.log_str += f"已设置为随机步数范围({min_step}~{max_step}) 随机值:{step}\n"
         
         user_token_info = user_tokens.get(self.user, {})
