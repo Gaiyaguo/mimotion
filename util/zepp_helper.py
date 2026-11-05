@@ -12,6 +12,30 @@ import requests
 from util.aes_help import encrypt_data, HM_AES_KEY, HM_AES_IV
 
 
+
+# 为每个请求设置超时；仅对可安全重试的网络故障进行有限重试。
+def _request(method, url, **kwargs):
+    kwargs.setdefault("timeout", (10, 30))
+    method = method.upper()
+    for attempt in range(3):
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.exceptions.ConnectTimeout:
+            # 连接尚未建立，可以安全重试，包括 POST。
+            if attempt == 2:
+                raise
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            # POST 可能已经被服务端接收，不能因读超时重复提交。
+            if method != "GET" or attempt == 2:
+                raise
+        else:
+            if method != "GET" or response.status_code not in (429, 502, 503, 504) or attempt == 2:
+                return response
+        delay = 2 ** (attempt + 1)
+        print(f"网络暂时异常，{delay} 秒后重试（{attempt + 2}/3）")
+        time.sleep(delay)
+
+
 # 通过账号密码获取access_token和refresh_token 但是refresh_token不知道怎么使用
 def login_access_token(user, password) -> (str | None, str | None):
     headers = {
@@ -39,7 +63,7 @@ def login_access_token(user, password) -> (str | None, str | None):
     cipher_data = encrypt_data(plaintext, HM_AES_KEY, HM_AES_IV)
 
     url1 = 'https://api-user.zepp.com/v2/registrations/tokens'
-    r1 = requests.post(url1, data=cipher_data, headers=headers, allow_redirects=False, timeout=5)
+    r1 = _request("POST", url1, data=cipher_data, headers=headers, allow_redirects=False)
     if r1.status_code != 303:
         return None, "登录异常，status: %d" % r1.status_code
     try:
@@ -127,7 +151,7 @@ def grant_login_tokens(access_token, device_id, is_phone=False) -> (str | None, 
             "source": "com.xiaomi.hm.health:6.14.0:50818",
             "third_name": "email",
         }
-    resp = requests.post(url, data=data, headers=headers).json()
+    resp = _request("POST", url, data=data, headers=headers).json()
     # print("请求客户端登录成功：%s" % json.dumps(resp, ensure_ascii=False, indent=2))  #
     _login_token, _userid, _app_token = None, None, None
     try:
@@ -146,7 +170,7 @@ def grant_login_tokens(access_token, device_id, is_phone=False) -> (str | None, 
 def grant_app_token(login_token: str) -> (str | None, str | None):
     url = f"https://account-cn.huami.com/v1/client/app_tokens?app_name=com.xiaomi.hm.health&dn=api-user.huami.com%2Capi-mifit.huami.com%2Capp-analytics.huami.com&login_token={login_token}"
     headers = {'User-Agent': 'MiFit/5.3.0 (iPhone; iOS 14.7.1; Scale/3.00)'}
-    resp = requests.get(url, headers=headers)
+    resp = _request("GET", url, headers=headers)
     if resp.status_code != 200:
         return None, "请求异常：%d" % resp.status_code
     resp = resp.json()
@@ -195,7 +219,7 @@ def check_app_token(app_token) -> (bool, str | None):
         "lang": "zh_CN",
         "clientid": "428135909242707968"
     }
-    response = requests.get(url, params=params, headers=headers)
+    response = _request("GET", url, params=params, headers=headers)
     if response.status_code != 200:
         return False, "请求异常：%d" % response.status_code
     response = response.json()
@@ -228,7 +252,7 @@ def renew_login_token(login_token) -> (str | None, str | None):
         "appplatform": "android_phone"
     }
 
-    resp = requests.get(url, params=params, headers=headers)
+    resp = _request("GET", url, params=params, headers=headers)
     if resp.status_code != 200:
         return None, "请求异常：%d" % resp.status_code
     resp = resp.json()
@@ -248,7 +272,7 @@ def get_user_device_id(app_token, userid) -> str | None:
         "User-Agent": "MiFit6.14.0 (M2007J1SC; Android 12; Density/2.75)"
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=5).json()
+        resp = _request("GET", url, headers=headers, timeout=5).json()
         items = resp.get("items", [])
         if items:
             # 1. 优先匹配 deviceType == 0 (手环/手表)
@@ -294,7 +318,7 @@ def post_fake_brand_data(step, app_token, userid, device_id=None):
 
     data = f'userid={userid}&last_sync_data_time=1597306380&device_type=0&last_deviceid={target_dev_id}&data_json={data_json}'
 
-    response = requests.post(url, data=data, headers=head)
+    response = _request("POST", url, data=data, headers=head)
     if response.status_code != 200:
         return False, "请求修改步数异常：%d" % response.status_code
     response = response.json()
@@ -303,3 +327,4 @@ def post_fake_brand_data(step, app_token, userid, device_id=None):
         return True, message
     else:
         return False, message
+
