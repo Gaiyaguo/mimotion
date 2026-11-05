@@ -19,9 +19,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout codes
+        id: checkout
         uses: actions/checkout@v5
         with:
           token: ${{ secrets.PAT }}
+          ref: master
       - name: 初始化Python
         uses: actions/setup-python@v6
         with:
@@ -35,11 +37,38 @@ jobs:
           pip3 install -r requirements.txt
           python3 main.py
       - name: persist tokens
+        if: ${{ always() && !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
         run: |
+          set -euo pipefail
+          if [ ! -f encrypted_tokens.data ]; then
+            echo "未生成登录缓存，跳过保存"
+            exit 0
+          fi
+          cache_copy=$(mktemp)
+          trap 'rm -f "$cache_copy"' EXIT
+          cp encrypted_tokens.data "$cache_copy"
           git config user.name github-actions
           git config user.email github-actions@users.noreply.github.com
-          git add encrypted_tokens.data
-          if ! git diff --cached --quiet; then
+          # 只保存缓存；每次以远端最新提交为基础，避免补跑旧提交产生冲突。
+          for attempt in 1 2 3; do
+            git restore --staged --worktree -- encrypted_tokens.data
+            git fetch origin master
+            git checkout -B master origin/master
+            cp "$cache_copy" encrypted_tokens.data
+            git add encrypted_tokens.data
+            if git diff --cached --quiet; then
+              echo "登录缓存没有变化"
+              exit 0
+            fi
             git commit -m "persist login tokens"
-            git push origin master
-          fi
+            if git push origin HEAD:master; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$((attempt * 2))"
+            fi
+          done
+          echo "::warning::登录缓存未能保存；请以步数同步步骤的结果判断是否同步成功"
+          exit 1
+
