@@ -13,7 +13,36 @@ from util.aes_help import encrypt_data, HM_AES_KEY, HM_AES_IV
 
 
 
-# 为每个请求设置超时；仅对可安全重试的网络故障进行有限重试。
+# Requests 会将 TLS 握手超时包装为 ReadTimeout；此时尚未发送 HTTP 请求。
+def _is_tls_handshake_timeout(error):
+    pending = [error]
+    seen = set()
+    handshake_timeout = False
+    redirected = False
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        tb = current.__traceback__
+        while tb is not None:
+            frame = tb.tb_frame
+            name = frame.f_code.co_name
+            module = frame.f_globals.get("__name__", "")
+            # 重定向后的握手失败，不能证明原始 POST 尚未被接收。
+            if name == "resolve_redirects" and module == "requests.sessions":
+                redirected = True
+            if (isinstance(current, TimeoutError)
+                    and name == "do_handshake" and module == "ssl"):
+                handshake_timeout = True
+            tb = tb.tb_next
+        pending.extend((current.__cause__, current.__context__,
+                        getattr(current, "reason", None)))
+        pending.extend(arg for arg in current.args if isinstance(arg, BaseException))
+    return handshake_timeout and not redirected
+
+
+# 每次连接最多等待 10 秒、读取最多等待 30 秒；总共最多尝试 3 次。
 def _request(method, url, **kwargs):
     kwargs.setdefault("timeout", (10, 30))
     method = method.upper()
@@ -21,12 +50,12 @@ def _request(method, url, **kwargs):
         try:
             response = requests.request(method, url, **kwargs)
         except requests.exceptions.ConnectTimeout:
-            # 连接尚未建立，可以安全重试，包括 POST。
+            # TCP 连接尚未建立，可以安全重试，包括 POST。
             if attempt == 2:
                 raise
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            # POST 可能已经被服务端接收，不能因读超时重复提交。
-            if method != "GET" or attempt == 2:
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as error:
+            # 普通 POST 读取超时可能已经提交；仅握手阶段超时可安全重试。
+            if (method != "GET" and not _is_tls_handshake_timeout(error)) or attempt == 2:
                 raise
         else:
             if method != "GET" or response.status_code not in (429, 502, 503, 504) or attempt == 2:
@@ -327,4 +356,3 @@ def post_fake_brand_data(step, app_token, userid, device_id=None):
         return True, message
     else:
         return False, message
-
